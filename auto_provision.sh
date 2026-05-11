@@ -2,6 +2,7 @@
 
 set -u
 
+# === Configuration & Defaults ===
 DEFAULT_REGION="ap-mumbai-1"
 DEFAULT_AD="AD-1"
 DEFAULT_FD="FD-2"
@@ -95,6 +96,8 @@ The script retries only OCI capacity errors. Other OCI CLI errors stop execution
 USAGE
 }
 
+# === Utility Functions ===
+
 fatal() {
   echo "Error: $*" >&2
   exit 2
@@ -107,6 +110,9 @@ require_value() {
   [[ -n "$value" ]] || fatal "$name is required."
 }
 
+# === Dotenv Parsing ===
+
+# Description: Removes leading and trailing whitespace from a string.
 trim_dotenv_value() {
   local value=$1
 
@@ -115,6 +121,7 @@ trim_dotenv_value() {
   printf '%s' "$value"
 }
 
+# Description: Removes comments from the end of a dotenv line, respecting quotes.
 strip_dotenv_comment() {
   local value=$1
   local result=""
@@ -148,6 +155,7 @@ strip_dotenv_comment() {
   trim_dotenv_value "$result"
 }
 
+# Description: Parses a raw dotenv value, handling escaping and outer quotes without executing shell substitution.
 parse_dotenv_value() {
   local raw=$1
   local value
@@ -271,6 +279,8 @@ pre_scan_env_file() {
   fi
 }
 
+# === OCI Auth & Validation ===
+
 normalize_auth_method() {
   case "$1" in
     api-key|api_key|apiKey|API_KEY)
@@ -379,6 +389,8 @@ validate_oci_auth() {
   exit 127
 }
 
+# === OCI CLI Auto-Install ===
+
 oci_cli_available() {
   command -v oci >/dev/null 2>&1 && oci --version >/dev/null 2>&1
 }
@@ -470,6 +482,8 @@ ensure_oci_cli() {
     exit 127
   fi
 }
+
+# === OCI Resource Lookup ===
 
 oci_base() {
   local cmd=(oci --region "$region")
@@ -600,6 +614,7 @@ build_default_launch_cmd() {
   launch_cmd+=(--metadata "{\"ssh_authorized_keys\": \"${ssh_public_key}\"}")
 }
 
+# Description: Determines if an OCI CLI output string represents a retryable out-of-capacity error.
 is_capacity_error() {
   local output=$1
   local normalized
@@ -621,6 +636,7 @@ random_delay() {
   fi
 }
 
+# Description: Extracts the instance OCID from raw OCI CLI JSON output using sed to avoid requiring jq.
 extract_instance_id() {
   local output=$1
 
@@ -714,6 +730,8 @@ ensure_dotenv_ignore() {
   fi
 }
 
+# === Artifact Generation ===
+
 prepare_run_artifact_dir() {
   local instance_id=$1
   local timestamp=$2
@@ -737,6 +755,8 @@ prepare_run_artifact_dir() {
   mkdir -p "$run_artifact_dir" || fatal "could not create run artifact directory: $run_artifact_dir"
 }
 
+# Description: Copies the user's SSH private key into the artifact directory.
+# Uses `chmod 600` to ensure the duplicated private key remains secure locally.
 copy_private_key_artifact() {
   local destination
 
@@ -829,6 +849,8 @@ INFO
   echo "SSH information saved to: $ssh_info_file"
   echo "SSH command: $ssh_command"
 }
+
+# === CLI Argument Parsing ===
 
 env_file=""
 pre_scan_env_file "$@"
@@ -1016,6 +1038,8 @@ fi
 if [[ ${#launch_cmd[@]} -eq 0 ]]; then
   build_default_launch_cmd
 fi
+
+# === Main Execution & Retry Loop ===
 
 attempt=1
 instance_id=""
