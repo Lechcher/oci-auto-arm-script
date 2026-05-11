@@ -1,0 +1,6 @@
+Instance name: arm-server
+Instance OCID: ocid1.instance.oc1.ap-mumbai-1.testinstance
+Public IP: 203.0.113.10
+SSH user: ubuntu
+Private key: /var/folders/vb/gxwtkm593vvf7b55h8z7kzdw0000gn/T/kilo/project-artifact-test/home/.ssh/id_rsa
+SSH command: ssh -i /var/folders/vb/gxwtkm593vvf7b55h8z7kzdw0000gn/T/kilo/project-artifact-test/home/.ssh/id_rsa ubuntu@203.0.113.10
