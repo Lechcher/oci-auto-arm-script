@@ -38,6 +38,7 @@ Options:
   --env-file PATH              Load config from dotenv file. Default: .env when present. Env: ENV_FILE
   --profile NAME               OCI CLI profile for api-key auth. Env: OCI_PROFILE
   --oci-config-file PATH       OCI CLI config file for api-key auth. Env: OCI_CLI_CONFIG_FILE
+  --oci-key-file PATH          OCI API private key file path for dotenv api-key auth. Env: OCI_KEY_FILE
   --auth-method METHOD         api-key, instance-principal, or resource-principal. Default: api-key. Env: OCI_AUTH_METHOD
   --artifact-root PATH         Project run artifact directory. Default: .oci-arm-runs. Env: OCI_ARTIFACT_ROOT
   --copy-ssh-private-key       Copy SSH private key into run artifact directory. Env: COPY_SSH_PRIVATE_KEY=true
@@ -60,13 +61,16 @@ OCI CLI bootstrap:
   Set OCI_AUTO_INSTALL_CLI=false or pass --no-install-oci-cli to disable auto-install.
 
 OCI authentication for scripts:
-  api-key mode uses existing ~/.oci/config, key_file, and optional --profile.
+  api-key mode uses OCI_USER_OCID, OCI_FINGERPRINT, OCI_TENANCY_OCID, OCI_REGION,
+  and OCI_KEY_FILE from .env when all are present.
+  api-key mode can also use existing ~/.oci/config, key_file, and optional --profile.
   Use --oci-config-file for project-local API key config without modifying ~/.oci/config.
   instance-principal mode uses --auth instance_principal and must run on OCI Compute.
   resource-principal mode uses --auth resource_principal in supported OCI environments.
   The script validates auth with 'oci os ns get' before provisioning.
   Do not use browser login for scripts: 'oci session authenticate' is not run.
-  The script does not write ~/.oci/config, private keys, fingerprints, tenancy OCIDs, or user OCIDs.
+  The script does not write ~/.oci/config or private keys and does not print fingerprints,
+  tenancy OCIDs, user OCIDs, or generated OCI config contents.
 
 Project artifacts:
   Default mode writes run artifacts under .oci-arm-runs by default.
@@ -178,6 +182,7 @@ parse_dotenv_value() {
 is_supported_env_key() {
   case "$1" in
     OCI_REGION|OCI_PROFILE|OCI_CLI_CONFIG_FILE|OCI_AUTH_METHOD|OCI_COMPARTMENT_ID|\
+    OCI_USER_OCID|OCI_FINGERPRINT|OCI_TENANCY_OCID|OCI_KEY_FILE|\
     SSH_PUBLIC_KEY_FILE|SSH_PUBLIC_KEY|SSH_PRIVATE_KEY_FILE|SSH_USER|SSH_INFO_FILE|\
     OCI_ARTIFACT_ROOT|COPY_SSH_PRIVATE_KEY|OVERWRITE_ARTIFACTS|OCI_IMAGE_ID|\
     OCI_VCN_ID|OCI_SUBNET_ID|OCI_AVAILABILITY_DOMAIN|OCI_AUTO_INSTALL_CLI|\
@@ -316,13 +321,78 @@ print_api_key_auth_guidance() {
   local config_display=${oci_config_file:-~/.oci/config}
 
   printf '%s\n' \
-    "API key auth requires existing OCI CLI config:" \
+    "API key auth requires either complete .env OCI API key fields:" \
+    "  OCI_USER_OCID, OCI_FINGERPRINT, OCI_TENANCY_OCID, OCI_REGION, OCI_KEY_FILE" \
+    "  OCI_KEY_FILE must be a private key file path, not private key contents." \
+    "or existing OCI CLI config:" \
     "  ${config_display} with user, fingerprint, tenancy, region, and key_file" \
     "  chmod 700 ~/.oci" \
     "  chmod 600 ${config_display}" \
     "  chmod 600 <private-key-file>" \
     "Use --profile NAME or OCI_PROFILE for non-DEFAULT profiles." \
     "Use --oci-config-file PATH or OCI_CLI_CONFIG_FILE for project-local config." >&2
+}
+
+has_dotenv_api_key_config_value() {
+  [[ -n "$oci_user_ocid" || -n "$oci_fingerprint" || -n "$oci_tenancy_ocid" || -n "$oci_key_file" ]]
+}
+
+has_complete_dotenv_api_key_config() {
+  [[ -n "$oci_user_ocid" && -n "$oci_fingerprint" && -n "$oci_tenancy_ocid" && -n "$region" && -n "$oci_key_file" ]]
+}
+
+validate_dotenv_api_key_config() {
+  local missing=()
+  local key_preview
+
+  [[ "$auth_method" == "api-key" ]] || return 0
+  has_dotenv_api_key_config_value || return 0
+
+  [[ -n "$oci_user_ocid" ]] || missing+=("OCI_USER_OCID")
+  [[ -n "$oci_fingerprint" ]] || missing+=("OCI_FINGERPRINT")
+  [[ -n "$oci_tenancy_ocid" ]] || missing+=("OCI_TENANCY_OCID")
+  [[ -n "$region" ]] || missing+=("OCI_REGION")
+  [[ -n "$oci_key_file" ]] || missing+=("OCI_KEY_FILE")
+
+  if (( ${#missing[@]} > 0 )); then
+    printf '%s\n' "Error: incomplete dotenv OCI API key config. Missing: ${missing[*]}" >&2
+    print_api_key_auth_guidance
+    exit 2
+  fi
+
+  key_preview=$(printf '%s' "$oci_key_file" | tr '[:upper:]' '[:lower:]')
+  if [[ "$key_preview" == *"-----begin"*"private key"* ]] || [[ "$key_preview" == *"-----end"*"private key"* ]]; then
+    printf '%s\n' "Error: OCI_KEY_FILE must be a private key file path, not private key contents." >&2
+    print_api_key_auth_guidance
+    exit 2
+  fi
+
+  [[ -r "$oci_key_file" ]] || fatal "OCI_KEY_FILE is not readable. Check private key path and permissions."
+}
+
+write_dotenv_api_key_config() {
+  [[ "$auth_method" == "api-key" ]] || return 0
+  has_complete_dotenv_api_key_config || return 0
+
+  mkdir -p "$artifact_root" || fatal "could not create artifact root: $artifact_root"
+  chmod 700 "$artifact_root" 2>/dev/null || true
+  ensure_artifact_ignore "${artifact_root%/}/"
+
+  generated_oci_config_file="${artifact_root%/}/oci-config.generated"
+  if [[ -e "$generated_oci_config_file" && "$overwrite_artifacts" != true ]]; then
+    fatal "generated OCI config already exists: $generated_oci_config_file. Use --overwrite-artifacts to replace it."
+  fi
+
+  cat > "$generated_oci_config_file" <<INFO
+[${profile:-DEFAULT}]
+user=${oci_user_ocid}
+fingerprint=${oci_fingerprint}
+tenancy=${oci_tenancy_ocid}
+region=${region}
+key_file=${oci_key_file}
+INFO
+  chmod 600 "$generated_oci_config_file" || fatal "could not set generated OCI config permissions to 0600"
+  effective_oci_config_file="$generated_oci_config_file"
 }
 
 print_instance_principal_guidance() {
@@ -493,8 +563,8 @@ oci_base() {
     cmd+=(--profile "$profile")
   fi
 
-  if [[ "$auth_method" == "api-key" && -n "$oci_config_file" ]]; then
-    cmd+=(--config-file "$oci_config_file")
+  if [[ "$auth_method" == "api-key" && -n "$effective_oci_config_file" ]]; then
+    cmd+=(--config-file "$effective_oci_config_file")
   fi
 
   auth_arg=$(oci_auth_arg)
@@ -594,8 +664,8 @@ build_default_launch_cmd() {
   if [[ "$auth_method" == "api-key" && -n "$profile" ]]; then
     launch_cmd+=(--profile "$profile")
   fi
-  if [[ "$auth_method" == "api-key" && -n "$oci_config_file" ]]; then
-    launch_cmd+=(--config-file "$oci_config_file")
+  if [[ "$auth_method" == "api-key" && -n "$effective_oci_config_file" ]]; then
+    launch_cmd+=(--config-file "$effective_oci_config_file")
   fi
   auth_arg=$(oci_auth_arg)
   if [[ -n "$auth_arg" ]]; then
@@ -781,7 +851,7 @@ write_run_artifacts() {
   local ssh_command=""
   local ssh_command_key
   local profile_display=${profile:-}
-  local config_display=${oci_config_file:-}
+  local config_display=${effective_oci_config_file:-}
 
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
   prepare_run_artifact_dir "$instance_id" "$timestamp"
@@ -860,6 +930,11 @@ max_delay=${MAX_DELAY:-60}
 region=${OCI_REGION:-$DEFAULT_REGION}
 profile=${OCI_PROFILE:-}
 oci_config_file=${OCI_CLI_CONFIG_FILE:-}
+effective_oci_config_file=$oci_config_file
+oci_user_ocid=${OCI_USER_OCID:-}
+oci_fingerprint=${OCI_FINGERPRINT:-}
+oci_tenancy_ocid=${OCI_TENANCY_OCID:-}
+oci_key_file=${OCI_KEY_FILE:-}
 auth_method=${OCI_AUTH_METHOD:-api-key}
 compartment_id=${OCI_COMPARTMENT_ID:-}
 ssh_public_key_file=${SSH_PUBLIC_KEY_FILE:-}
@@ -943,6 +1018,12 @@ while [[ $# -gt 0 ]]; do
     --oci-config-file)
       [[ $# -ge 2 ]] || fatal "missing value for --oci-config-file"
       oci_config_file="$2"
+      effective_oci_config_file="$2"
+      shift 2
+      ;;
+    --oci-key-file)
+      [[ $# -ge 2 ]] || fatal "missing value for --oci-key-file"
+      oci_key_file="$2"
       shift 2
       ;;
     --auth-method)
@@ -1019,6 +1100,8 @@ requested_auth_method=$auth_method
 auth_method=$(normalize_auth_method "$requested_auth_method") || fatal "unsupported auth method: $requested_auth_method. Use api-key, instance-principal, or resource-principal."
 
 ensure_dotenv_ignore
+validate_dotenv_api_key_config
+write_dotenv_api_key_config
 ensure_oci_cli
 validate_oci_auth
 

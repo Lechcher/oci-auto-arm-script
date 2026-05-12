@@ -1,0 +1,5 @@
+.env
+.env.local
+.env.*.local
+
+/var/folders/vb/gxwtkm593vvf7b55h8z7kzdw0000gn/T/tmp.pNrHOclLiv/work/.runs/
